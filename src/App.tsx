@@ -1,5 +1,6 @@
+
 import { useEffect, useRef, useState } from 'react';
-import { Camera, Eye, ArrowLeft, RotateCw, Trash2, Play } from 'lucide-react';
+import { Camera, Eye, ArrowLeft, RotateCw, Trash2, Play, ChevronLeft, ChevronRight, X } from 'lucide-react';
 
 export default function CameraUI() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -11,6 +12,8 @@ export default function CameraUI() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
 
   const startCamera = async () => {
     try {
@@ -100,6 +103,64 @@ export default function CameraUI() {
 
   const deleteImage = (index: number) => {
     setCapturedImages(prev => prev.filter((_, i) => i !== index));
+    // Close modal if deleting the currently viewed image
+    if (selectedImageIndex === index) {
+      setSelectedImage(null);
+      setSelectedImageIndex(null);
+    }
+  };
+
+  const openImageModal = (img: string, index: number) => {
+    setSelectedImage(img);
+    setSelectedImageIndex(index);
+  };
+
+  const closeImageModal = () => {
+    setSelectedImage(null);
+    setSelectedImageIndex(null);
+  };
+
+  const navigateToNextImage = () => {
+    if (selectedImageIndex !== null && selectedImageIndex < capturedImages.length - 1) {
+      const nextIndex = selectedImageIndex + 1;
+      setSelectedImageIndex(nextIndex);
+      setSelectedImage(capturedImages[nextIndex]);
+    }
+  };
+
+  const navigateToPrevImage = () => {
+    if (selectedImageIndex !== null && selectedImageIndex > 0) {
+      const prevIndex = selectedImageIndex - 1;
+      setSelectedImageIndex(prevIndex);
+      setSelectedImage(capturedImages[prevIndex]);
+    }
+  };
+
+  // Touch/swipe handling
+  const [touchStartX, setTouchStartX] = useState<number>(0);
+  const [touchEndX, setTouchEndX] = useState<number>(0);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchStartX(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    setTouchEndX(e.targetTouches[0].clientX);
+  };
+
+  const handleTouchEnd = () => {
+    if (!touchStartX || !touchEndX) return;
+    
+    const distance = touchStartX - touchEndX;
+    const isLeftSwipe = distance > 50;
+    const isRightSwipe = distance < -50;
+
+    if (isLeftSwipe) {
+      navigateToNextImage();
+    }
+    if (isRightSwipe) {
+      navigateToPrevImage();
+    }
   };
 
   return (
@@ -275,21 +336,14 @@ export default function CameraUI() {
                 {capturedImages.map((img, index) => (
                   <div
                     key={index}
-                    className="relative group rounded-2xl overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 shadow-xl"
+                    className="relative group rounded-2xl overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 shadow-xl cursor-pointer"
+                    onClick={() => openImageModal(img, index)}
                   >
                     <img
                       src={img}
                       alt={`Captured ${index + 1}`}
                       className="w-full aspect-square object-cover"
                     />
-                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
-                      <button
-                        className="p-3 bg-red-600 rounded-full hover:bg-red-500 transition-colors"
-                        onClick={() => deleteImage(index)}
-                      >
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </div>
                     <div className="absolute top-2 right-2 bg-black/70 px-2 py-1 rounded-full text-xs">
                       {index + 1}
                     </div>
@@ -311,6 +365,100 @@ export default function CameraUI() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Full Size Image Modal */}
+      {selectedImage && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div 
+            className="relative w-full h-full flex items-center justify-center p-4"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            {/* Navigation Arrows */}
+            {selectedImageIndex !== null && selectedImageIndex > 0 && (
+              <button
+                className="absolute left-4 top-1/2 transform -translate-y-1/2 z-10 p-3 bg-black/70 rounded-full hover:bg-black/90 transition-colors"
+                onClick={navigateToPrevImage}
+              >
+                <ChevronLeft className="w-6 h-6 text-white" />
+              </button>
+            )}
+            
+            {selectedImageIndex !== null && selectedImageIndex < capturedImages.length - 1 && (
+              <button
+                className="absolute right-4 top-1/2 transform -translate-y-1/2 z-10 p-3 bg-black/70 rounded-full hover:bg-black/90 transition-colors"
+                onClick={navigateToNextImage}
+              >
+                <ChevronRight className="w-6 h-6 text-white" />
+              </button>
+            )}
+
+            <img
+              src={selectedImage}
+              alt={`Photo ${selectedImageIndex! + 1}`}
+              className="max-w-full max-h-full object-contain rounded-lg select-none"
+              draggable={false}
+            />
+            
+            {/* Close Button */}
+            <button
+              className="absolute top-4 right-4 p-2 bg-black/70 rounded-full hover:bg-black/90 transition-colors z-10"
+              onClick={closeImageModal}
+            >
+              <X className="w-6 h-6 text-white" />
+            </button>
+            
+            {/* Delete Button */}
+            <button
+              className="absolute bottom-4 right-4 p-3 bg-red-600 rounded-full hover:bg-red-500 transition-colors shadow-lg z-10"
+              onClick={() => deleteImage(selectedImageIndex!)}
+            >
+              <Trash2 className="w-6 h-6 text-white" />
+            </button>
+            
+            {/* Image Info & Navigation Dots */}
+            <div className="absolute bottom-4 left-4 z-10">
+              <div className="bg-black/70 px-3 py-2 rounded-full mb-2">
+                <span className="text-white text-sm">Photo {selectedImageIndex! + 1} of {capturedImages.length}</span>
+              </div>
+              
+              {/* Navigation Dots */}
+              {capturedImages.length > 1 && (
+                <div className="flex space-x-1">
+                  {capturedImages.map((_, index) => (
+                    <button
+                      key={index}
+                      className={`w-2 h-2 rounded-full transition-all duration-200 ${
+                        index === selectedImageIndex
+                          ? 'bg-white scale-125'
+                          : 'bg-white/50 hover:bg-white/75'
+                      }`}
+                      onClick={() => {
+                        setSelectedImageIndex(index);
+                        setSelectedImage(capturedImages[index]);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Swipe Indicator */}
+            {capturedImages.length > 1 && (
+              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/70 px-3 py-1 rounded-full z-10">
+                <span className="text-white text-xs opacity-75">Swipe or use arrows to navigate</span>
+              </div>
+            )}
+          </div>
+          
+          {/* Click outside to close */}
+          <div 
+            className="absolute inset-0 -z-10"
+            onClick={closeImageModal}
+          ></div>
         </div>
       )}
 
