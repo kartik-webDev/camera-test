@@ -1,468 +1,462 @@
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { Camera, Upload, Scan, X, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import { createWorker, PSM } from 'tesseract.js';
 
-import { useEffect, useRef, useState } from 'react';
-import { Camera, Eye, ArrowLeft, RotateCw, Trash2, Play, ChevronLeft, ChevronRight, X } from 'lucide-react';
 
-export default function CameraUI() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+declare global {
+  interface Window {
+    Tesseract: any;
+  }
+}
 
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
-  const [capturedImages, setCapturedImages] = useState<string[]>([]);
-  const [isCameraOn, setIsCameraOn] = useState(false);
-  const [isPreviewMode, setIsPreviewMode] = useState(false);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
-
-  const startCamera = async () => {
-    try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode,
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false,
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = media;
-        videoRef.current.play();
-      }
-      setStream(media);
-    } catch (err) {
-      console.error('Camera error:', err);
-    }
-  };
-
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setIsCameraOn(false);
-  };
-
-  const flipCamera = () => {
-    stopCamera();
-    setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
-    setTimeout(() => {
-      setIsCameraOn(true);
-    }, 300);
-  };
-
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    if (capturedImages.length >= 4) {
-      // Show a nicer alert
+// Load Tesseract from CDN with better error handling
+const loadTesseract = (): Promise<any> => {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) {
+      resolve(window.Tesseract);
       return;
     }
 
-    setIsCapturing(true);
-    
-    setTimeout(() => {
-      const canvas = canvasRef.current;
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js';
+    script.onload = () => {
+      // Wait a bit for the global to be available
+      setTimeout(() => {
+        if (window.Tesseract) {
+          resolve(window.Tesseract);
+        } else {
+          reject(new Error('Tesseract failed to initialize'));
+        }
+      }, 100);
+    };
+    script.onerror = () => reject(new Error('Failed to load Tesseract script'));
+    document.head.appendChild(script);
+  });
+};
+
+const IndianPlateScanner: React.FC = () => {
+  const [extractedText, setExtractedText] = useState('');
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState('');
+  const [tesseractLoaded, setTesseractLoaded] = useState(false);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const workerRef = useRef<any>(null);
+
+  // Preload Tesseract on component mount
+  useEffect(() => {
+    const initTesseract = async () => {
+      try {
+        await loadTesseract();
+        setTesseractLoaded(true);
+      } catch (err) {
+        console.error('Failed to load Tesseract:', err);
+        setError('Failed to load OCR engine. Please refresh the page.');
+      }
+    };
+    initTesseract();
+  }, []);
+
+  const startCamera = useCallback(async () => {
+    try {
+      setError('');
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
+      });
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setIsCameraOpen(true);
+      }
+    } catch (err) {
+      setError('Camera access denied. Please allow camera permission.');
+      console.error('Error accessing camera:', err);
+    }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setIsCameraOpen(false);
+  }, []);
+
+  const capturePhoto = useCallback(() => {
+    if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      
+      if (ctx) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+        
+        const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+        setCapturedImage(imageDataUrl);
+        stopCamera();
+      }
+    }
+  }, [stopCamera]);
 
-      if (!canvas || !video) return;
+  const preprocessImage = useCallback((imageData: string): Promise<string> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxWidth = 800;
+      const maxHeight = 600;
+      let { width, height } = img;
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // Resize if needed
+      if (width > maxWidth || height > maxHeight) {
+        const ratio = Math.min(maxWidth / width, maxHeight / height);
+        width = width * ratio;
+        height = height * ratio;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
 
       const ctx = canvas.getContext('2d');
-      if (ctx) ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (!ctx) {
+        console.warn('Canvas context is null — skipping preprocessing.');
+        return resolve(imageData); // fallback to original
+      }
 
-      const imgUrl = canvas.toDataURL('image/jpeg', 0.9);
-      setCapturedImages(prev => [...prev, imgUrl]);
-      setIsCapturing(false);
-    }, 150);
-  };
+      // Draw image to canvas
+      ctx.drawImage(img, 0, 0, width, height);
 
-  useEffect(() => {
-    if (isCameraOn) {
-      startCamera();
-    }
-    return () => {
-      if (stream) stopCamera();
+      // Enhance contrast
+      const imageDataObj = ctx.getImageData(0, 0, width, height);
+      const data = imageDataObj.data;
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = Math.min(255, data[i] * 1.2);       // R
+        data[i + 1] = Math.min(255, data[i + 1] * 1.2); // G
+        data[i + 2] = Math.min(255, data[i + 2] * 1.2); // B
+      }
+      ctx.putImageData(imageDataObj, 0, 0);
+
+      // Return base64 string
+      const processedBase64 = canvas.toDataURL('image/jpeg', 0.9);
+      resolve(processedBase64);
     };
-  }, [facingMode, isCameraOn]);
 
-  const handleViewPhotos = () => {
-    stopCamera();
-    setIsPreviewMode(true);
-  };
+    img.onerror = () => {
+      console.error('Failed to load image for preprocessing.');
+      resolve(imageData); // fallback
+    };
 
-  const handleBackToCamera = () => {
-    setIsPreviewMode(false);
-    setIsCameraOn(true);
-  };
+    img.src = imageData;
+  });
+}, []);
 
-  const deleteImage = (index: number) => {
-    setCapturedImages(prev => prev.filter((_, i) => i !== index));
-    // Close modal if deleting the currently viewed image
-    if (selectedImageIndex === index) {
-      setSelectedImage(null);
-      setSelectedImageIndex(null);
+ const formatIndianPlate = (text: string): string | null => {
+  let cleaned = text
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/O/g, '0')
+    .replace(/I/g, '1')
+    .trim();
+
+  const compact = cleaned.replace(/\s+/g, '');
+
+  const patterns: RegExp[] = [
+    /^([A-Z]{2})(\d{2})([A-Z]{1,2})(\d{4})$/,
+    /^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{3,4})$/,
+    /^([A-Z]{2})(\d{2})([A-Z]{2,4})$/,
+    /^([A-Z]{2})(\d{1,2})([A-Z]{1})(\d{3})$/,
+    /^IND([A-Z]{2})(\d{2})([A-Z]{2})(\d{4})$/ // Matches INDRJ14CV0002
+  ];
+
+  for (const pattern of patterns) {
+    const match = compact.match(pattern);
+    if (match) {
+      return match.slice(1).join(' ');
     }
-  };
+  }
 
-  const openImageModal = (img: string, index: number) => {
-    setSelectedImage(img);
-    setSelectedImageIndex(index);
-  };
+  return null;
+};
 
-  const closeImageModal = () => {
-    setSelectedImage(null);
-    setSelectedImageIndex(null);
-  };
+const processImage = useCallback(async (imageData: string) => {
+  setIsProcessing(true);
+  setError('');
+  setExtractedText('');
 
-  const navigateToNextImage = () => {
-    if (selectedImageIndex !== null && selectedImageIndex < capturedImages.length - 1) {
-      const nextIndex = selectedImageIndex + 1;
-      setSelectedImageIndex(nextIndex);
-      setSelectedImage(capturedImages[nextIndex]);
+  try {
+    // ✅ Preprocess image
+    const processedImage = await preprocessImage(imageData);
+
+    // ✅ Create worker once
+    if (!workerRef.current) {
+      workerRef.current = await createWorker('eng');
+      await workerRef.current.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+        tessedit_pageseg_mode: PSM.SINGLE_WORD,
+      });
     }
-  };
 
-  const navigateToPrevImage = () => {
-    if (selectedImageIndex !== null && selectedImageIndex > 0) {
-      const prevIndex = selectedImageIndex - 1;
-      setSelectedImageIndex(prevIndex);
-      setSelectedImage(capturedImages[prevIndex]);
+    // ✅ Use processed image for OCR
+    const result = await workerRef.current.recognize(processedImage);
+
+    let text = result.data.text
+      .toUpperCase()
+      .replace(/[^A-Z0-9\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/O/g, '0')
+      .replace(/I/g, '1')
+      .trim();
+
+    const cleanedText = formatIndianPlate(text);
+
+    if (cleanedText) {
+      setExtractedText(cleanedText);
+    } else {
+      setError('Could not extract valid plate number. Try again.');
     }
-  };
+  } catch (err) {
+    console.error('OCR Error:', err);
+    setError('Failed to process image. Please try again.');
+  } finally {
+    setIsProcessing(false);
+  }
+}, [preprocessImage]);
 
-  // Touch/swipe handling
-  const [touchStartX, setTouchStartX] = useState<number>(0);
-  const [touchEndX, setTouchEndX] = useState<number>(0);
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    setTouchStartX(e.targetTouches[0].clientX);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    setTouchEndX(e.targetTouches[0].clientX);
-  };
-
-  const handleTouchEnd = () => {
-    if (!touchStartX || !touchEndX) return;
-    
-    const distance = touchStartX - touchEndX;
-    const isLeftSwipe = distance > 50;
-    const isRightSwipe = distance < -50;
-
-    if (isLeftSwipe) {
-      navigateToNextImage();
+ 
+  const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      setError('');
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const imageData = e.target?.result as string;
+        setCapturedImage(imageData);
+        // Process immediately when uploaded
+        processImage(imageData);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setError('Please select a valid image file.');
     }
-    if (isRightSwipe) {
-      navigateToPrevImage();
+  }, [processImage]);
+
+  const resetScanner = useCallback(() => {
+    setCapturedImage(null);
+    setExtractedText('');
+    setError('');
+    setIsProcessing(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
-  };
+  }, []);
+
+  // Cleanup worker on unmount
+  useEffect(() => {
+    return () => {
+      if (workerRef.current) {
+        workerRef.current.terminate();
+      }
+    };
+  }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-900 text-white">
-      {/* Welcome Screen */}
-      {!isCameraOn && !isPreviewMode && capturedImages.length === 0 && (
-        <div className="flex flex-col items-center justify-center min-h-screen p-6">
-          <div className="relative mb-8">
-            <div className="w-32 h-32 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center shadow-2xl animate-pulse">
-              <Camera className="w-16 h-16 text-white" />
-            </div>
-            <div className="absolute -top-2 -right-2 w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
-              <div className="w-3 h-3 bg-white rounded-full"></div>
-            </div>
+    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 p-4">
+      <div className="max-w-md mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8 pt-8">
+          <div className="bg-white/10 backdrop-blur-md rounded-full w-20 h-20 mx-auto mb-4 flex items-center justify-center border border-white/20">
+            <Scan className="w-10 h-10 text-white" />
           </div>
-          
-          <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            Camera Pro
-          </h1>
-          <p className="text-gray-400 text-center mb-8 max-w-sm">
-            Capture stunning photos with our advanced camera interface
-          </p>
-          
-          <button
-            className="group relative px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 rounded-2xl font-semibold transition-all duration-300 transform hover:scale-105 shadow-xl hover:shadow-2xl"
-            onClick={() => setIsCameraOn(true)}
-          >
-            <div className="flex items-center space-x-3">
-              <Play className="w-6 h-6" />
-              <span>Start Camera</span>
-            </div>
-            <div className="absolute inset-0 bg-white/20 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-          </button>
+          <h1 className="text-3xl font-bold text-white mb-2">Vehicle Plate Scanner</h1>
+          <p className="text-blue-200 text-sm">Scan Indian vehicle number plates instantly</p>
+          {!tesseractLoaded && (
+            <p className="text-yellow-400 text-xs mt-2 flex items-center justify-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              Loading OCR engine...
+            </p>
+          )}
         </div>
-      )}
 
-      {/* Camera Interface */}
-      {isCameraOn && !isPreviewMode && (
-        <div className="flex flex-col h-screen">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 bg-black/50 backdrop-blur-md">
-            <div className="flex items-center space-x-2">
-              <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-              <span className="text-sm font-medium">Live</span>
-            </div>
-            <h2 className="text-lg font-semibold">Camera</h2>
-            <div className="flex items-center space-x-2">
-              <span className="text-sm text-gray-300">{capturedImages.length}/4</span>
-            </div>
-          </div>
-
-          {/* Camera View */}
-          <div className="flex-1 relative overflow-hidden">
-            <video
-              ref={videoRef}
-              playsInline
-              autoPlay
-              muted
-              className="w-full h-full object-cover"
-            />
-            
-            {/* Capture Flash Effect */}
-            {isCapturing && (
-              <div className="absolute inset-0 bg-white opacity-70 animate-ping"></div>
-            )}
-
-            {/* Camera Grid Lines */}
-            <div className="absolute inset-0 pointer-events-none opacity-30">
-              <div className="absolute top-1/3 left-0 right-0 h-px bg-white"></div>
-              <div className="absolute top-2/3 left-0 right-0 h-px bg-white"></div>
-              <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white"></div>
-              <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white"></div>
-            </div>
-
-            {/* Photo Counter */}
-            {capturedImages.length >= 4 && (
-              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-500/90 backdrop-blur-sm px-4 py-2 rounded-full">
-                <span className="text-sm font-medium">Maximum photos reached</span>
+        {/* Main Content */}
+        <div className="bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 overflow-hidden shadow-2xl">
+          
+          {/* Camera/Image Display */}
+          <div className="relative bg-black/50 aspect-video">
+            {isCameraOpen ? (
+              <div className="relative w-full h-full">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 border-2 border-dashed border-yellow-400/50 m-4 rounded-lg flex items-center justify-center">
+                  <div className="text-center">
+                    <p className="text-yellow-400 text-sm font-medium mb-2">
+                      Align number plate within frame
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : capturedImage ? (
+              <div className="relative w-full h-full">
+                <img
+                  src={capturedImage}
+                  alt="Captured"
+                  className="w-full h-full object-cover"
+                />
+                {isProcessing && (
+                  <div className="absolute inset-0 bg-black/70 flex items-center justify-center">
+                    <div className="text-center text-white">
+                      <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-3"></div>
+                      <p className="text-sm font-medium">Processing with Tesseract OCR...</p>
+                      <p className="text-xs text-blue-200 mt-1">Analyzing image...</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-center p-6">
+                <div>
+                  <Camera className="w-16 h-16 text-white/50 mx-auto mb-4" />
+                  <p className="text-white/70 text-sm">
+                    Click camera button to start scanning
+                  </p>
+                </div>
               </div>
             )}
           </div>
 
           {/* Controls */}
-          <div className="bg-black/80 backdrop-blur-md p-6">
-            <div className="flex items-center justify-between max-w-sm mx-auto">
-              {/* View Photos Button */}
-              <button
-                className={`p-4 rounded-full transition-all duration-300 ${
-                  capturedImages.length > 0
-                    ? 'bg-green-600 hover:bg-green-500 hover:scale-110 shadow-lg'
-                    : 'bg-gray-700 opacity-50 cursor-not-allowed'
-                }`}
-                onClick={handleViewPhotos}
-                disabled={capturedImages.length === 0}
-              >
-                <Eye className="w-6 h-6" />
-              </button>
-
-              {/* Capture Button */}
-              <button
-                className={`relative p-6 rounded-full transition-all duration-300 transform ${
-                  capturedImages.length >= 4
-                    ? 'bg-gray-600 cursor-not-allowed'
-                    : 'bg-white hover:bg-gray-100 hover:scale-110 shadow-2xl'
-                }`}
-                onClick={capturePhoto}
-                disabled={capturedImages.length >= 4 || isCapturing}
-              >
-                <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center">
-                  <Camera className="w-5 h-5 text-white" />
-                </div>
-                {isCapturing && (
-                  <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping"></div>
-                )}
-              </button>
-
-              {/* Flip Camera Button */}
-              <button
-                className="p-4 rounded-full bg-gray-700 hover:bg-gray-600 transition-all duration-300 hover:scale-110 shadow-lg"
-                onClick={flipCamera}
-              >
-                <RotateCw className="w-6 h-6" />
-              </button>
-            </div>
-
-            {/* Photo Thumbnails */}
-            {capturedImages.length > 0 && (
-              <div className="flex justify-center mt-4 space-x-2">
-                {capturedImages.slice(-3).map((_, index) => (
-                  <div
-                    key={index}
-                    className="w-2 h-2 bg-blue-500 rounded-full opacity-60"
-                  ></div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Preview Mode */}
-      {isPreviewMode && (
-        <div className="flex flex-col h-screen">
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 bg-black/90 backdrop-blur-md">
-            <button
-              className="p-2 rounded-full bg-gray-700 hover:bg-gray-600 transition-colors"
-              onClick={handleBackToCamera}
-            >
-              <ArrowLeft className="w-6 h-6" />
-            </button>
-            <h2 className="text-lg font-semibold">Photos ({capturedImages.length})</h2>
-            <button
-              className="p-2 rounded-full bg-red-600 hover:bg-red-500 transition-colors"
-              onClick={() => {
-                setCapturedImages([]);
-                setIsPreviewMode(false);
-              }}
-            >
-              <Trash2 className="w-6 h-6" />
-            </button>
-          </div>
-
-          {/* Photos Grid */}
-          <div className="flex-1 p-4 overflow-y-auto">
-            {capturedImages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                <Camera className="w-16 h-16 mb-4 opacity-50" />
-                <p>No photos captured yet</p>
+          <div className="p-6 space-y-4">
+            {isCameraOpen ? (
+              <div className="flex gap-3">
+                <button
+                  onClick={capturePhoto}
+                  className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 text-white py-3 px-6 rounded-xl font-semibold flex items-center justify-center gap-2 hover:from-green-600 hover:to-emerald-700 transition-all duration-200 shadow-lg"
+                >
+                  <Camera className="w-5 h-5" />
+                  Capture Photo
+                </button>
+                <button
+                  onClick={stopCamera}
+                  className="bg-red-500/20 text-red-400 p-3 rounded-xl hover:bg-red-500/30 transition-all duration-200 border border-red-500/30"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-4">
-                {capturedImages.map((img, index) => (
-                  <div
-                    key={index}
-                    className="relative group rounded-2xl overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 shadow-xl cursor-pointer"
-                    onClick={() => openImageModal(img, index)}
+              <div className="space-y-3">
+                <button
+                  onClick={startCamera}
+                  disabled={isProcessing || !tesseractLoaded}
+                  className="w-full bg-gradient-to-r from-blue-500 to-purple-600 text-white py-3 px-6 rounded-xl font-semibold flex items-center justify-center gap-2 hover:from-blue-600 hover:to-purple-700 transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Camera className="w-5 h-5" />
+                  Open Camera
+                </button>
+                
+                <div className="relative">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isProcessing || !tesseractLoaded}
+                    className="w-full bg-white/10 text-white py-3 px-6 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-white/20 transition-all duration-200 border border-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <img
-                      src={img}
-                      alt={`Captured ${index + 1}`}
-                      className="w-full aspect-square object-cover"
-                    />
-                    <div className="absolute top-2 right-2 bg-black/70 px-2 py-1 rounded-full text-xs">
-                      {index + 1}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Bottom Actions */}
-          <div className="bg-black/90 backdrop-blur-md p-4">
-            <div className="flex justify-center space-x-4">
-              <button
-                className="flex items-center space-x-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl transition-colors"
-                onClick={handleBackToCamera}
-              >
-                <Camera className="w-5 h-5" />
-                <span>Take More</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Full Size Image Modal */}
-      {selectedImage && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div 
-            className="relative w-full h-full flex items-center justify-center p-4"
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-          >
-            {/* Navigation Arrows */}
-            {selectedImageIndex !== null && selectedImageIndex > 0 && (
-              <button
-                className="absolute left-4 top-1/2 transform -translate-y-1/2 z-10 p-3 bg-black/70 rounded-full hover:bg-black/90 transition-colors"
-                onClick={navigateToPrevImage}
-              >
-                <ChevronLeft className="w-6 h-6 text-white" />
-              </button>
-            )}
-            
-            {selectedImageIndex !== null && selectedImageIndex < capturedImages.length - 1 && (
-              <button
-                className="absolute right-4 top-1/2 transform -translate-y-1/2 z-10 p-3 bg-black/70 rounded-full hover:bg-black/90 transition-colors"
-                onClick={navigateToNextImage}
-              >
-                <ChevronRight className="w-6 h-6 text-white" />
-              </button>
-            )}
-
-            <img
-              src={selectedImage}
-              alt={`Photo ${selectedImageIndex! + 1}`}
-              className="max-w-full max-h-full object-contain rounded-lg select-none"
-              draggable={false}
-            />
-            
-            {/* Close Button */}
-            <button
-              className="absolute top-4 right-4 p-2 bg-black/70 rounded-full hover:bg-black/90 transition-colors z-10"
-              onClick={closeImageModal}
-            >
-              <X className="w-6 h-6 text-white" />
-            </button>
-            
-            {/* Delete Button */}
-            <button
-              className="absolute bottom-4 right-4 p-3 bg-red-600 rounded-full hover:bg-red-500 transition-colors shadow-lg z-10"
-              onClick={() => deleteImage(selectedImageIndex!)}
-            >
-              <Trash2 className="w-6 h-6 text-white" />
-            </button>
-            
-            {/* Image Info & Navigation Dots */}
-            <div className="absolute bottom-4 left-4 z-10">
-              <div className="bg-black/70 px-3 py-2 rounded-full mb-2">
-                <span className="text-white text-sm">Photo {selectedImageIndex! + 1} of {capturedImages.length}</span>
-              </div>
-              
-              {/* Navigation Dots */}
-              {capturedImages.length > 1 && (
-                <div className="flex space-x-1">
-                  {capturedImages.map((_, index) => (
-                    <button
-                      key={index}
-                      className={`w-2 h-2 rounded-full transition-all duration-200 ${
-                        index === selectedImageIndex
-                          ? 'bg-white scale-125'
-                          : 'bg-white/50 hover:bg-white/75'
-                      }`}
-                      onClick={() => {
-                        setSelectedImageIndex(index);
-                        setSelectedImage(capturedImages[index]);
-                      }}
-                    />
-                  ))}
+                    <Upload className="w-5 h-5" />
+                    Upload Image
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
                 </div>
+              </div>
+            )}
+
+            {/* Extracted Text Display */}
+            {(extractedText || error) && (
+              <div className="space-y-3">
+                <label className="block text-white/80 text-sm font-medium">
+                  Extracted Number Plate:
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={extractedText}
+                    onChange={(e) => setExtractedText(e.target.value)}
+                    placeholder="Number plate text will appear here..."
+                    className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-200"
+                  />
+                  {extractedText && (
+                    <CheckCircle className="absolute right-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-green-400" />
+                  )}
+                </div>
+                
+                {error && (
+                  <div className="flex items-center gap-2 text-red-400 text-sm bg-red-500/10 p-3 rounded-lg border border-red-500/20">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    {error}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex gap-2">
+              {(capturedImage || extractedText) && (
+                <button
+                  onClick={resetScanner}
+                  className="flex-1 bg-white/10 text-white py-2 px-4 rounded-lg font-medium hover:bg-white/20 transition-all duration-200 border border-white/20"
+                >
+                  Scan Another
+                </button>
+              )}
+              {capturedImage && !isProcessing && (
+                <button
+                  onClick={() => processImage(capturedImage)}
+                  disabled={!tesseractLoaded}
+                  className="flex-1 bg-gradient-to-r from-orange-500 to-red-600 text-white py-2 px-4 rounded-lg font-medium hover:from-orange-600 hover:to-red-700 transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Re-scan
+                </button>
               )}
             </div>
-
-            {/* Swipe Indicator */}
-            {capturedImages.length > 1 && (
-              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/70 px-3 py-1 rounded-full z-10">
-                <span className="text-white text-xs opacity-75">Swipe or use arrows to navigate</span>
-              </div>
-            )}
           </div>
-          
-          {/* Click outside to close */}
-          <div 
-            className="absolute inset-0 -z-10"
-            onClick={closeImageModal}
-          ></div>
         </div>
-      )}
 
-      <canvas ref={canvasRef} className="hidden" />
+        {/* Instructions */}
+        <div className="mt-6 text-center space-y-2">
+          <p className="text-blue-200/80 text-xs leading-relaxed">
+            For best results, ensure the number plate is clearly visible, well-lit, and the image is sharp. 
+            The app uses Tesseract OCR to recognize Indian vehicle registration plates.
+          </p>
+          <p className="text-blue-300/60 text-xs">
+            Supported formats: XX 00 XX 0000 • Optimized for faster processing
+          </p>
+        </div>
+
+        {/* Hidden Canvas */}
+        <canvas ref={canvasRef} className="hidden" />
+      </div>
     </div>
   );
-}
+};
+
+export default IndianPlateScanner;
