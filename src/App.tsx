@@ -145,22 +145,39 @@ const ModernCameraApp: React.FC = () => {
 
 
     // Utility to validate and format Indian number plates
-    const validateIndianPlate = (rawText: string): string | null => {
-      const strictRegex = /^[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{4}$/;
+const validateIndianPlate = (rawText: string): string | null => {
+  // 🔧 Flexible regex patterns for Indian plates
+  const plateRegexList = [
+    /^[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{4}$/,                  // HR26 AB 1234
+    /^IND\s?[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{4}$/,            // IND HR26 AB 1234
+    /^IND?[A-Z]{2}\d{2}\d{4,6}$/,                                 // INDHR26005551
+    /^[A-Z]{2}\d{2}\d{4,6}$/,                                     // HR26005551
+    /^IND\s?[A-Z]{2}\s?\d{2}\s?\d{4,6}$/,                         // IND HR 26 005551
+    /^[A-Z]{2}\d{2}\d{4,6}$/                                      // HR26005551 fallback
+  ];
 
-      const cleaned = rawText
-        .replace(/\s+/g, ' ')
-        .replace(/[^A-Z0-9\s]/g, '')
-        .trim();
+  // 🧼 Clean and normalize OCR input
+  const cleaned = rawText
+    .replace(/\s+/g, '')           // Remove spaces
+    .toUpperCase()                 // Normalize case
+    .replace(/[^A-Z0-9]/g, '')     // Remove non-alphanumerics
+    .replace(/O/g, '0')            // O → 0
+    .replace(/I/g, '1')            // I → 1
+    .replace(/Z/g, '2')            // Z → 2
+    .replace(/S/g, '5');           // S → 5
 
-      if (strictRegex.test(cleaned)) {
-        const parts = cleaned.match(/[A-Z]{2}|\d{1,2}|[A-Z]{1,2}|\d{4}/g);
-        return parts ? parts.join(' ') : null;
-      }
+  // 🔍 Try each regex pattern
+  for (const regex of plateRegexList) {
+    const match = cleaned.match(regex);
+    if (match) {
+      // 🧠 Extract segments for formatting
+      const parts = cleaned.match(/[A-Z]{2}|\d{1,2}|[A-Z]{1,2}|\d{4,6}/g);
+      return parts ? parts.join(' ') : null;
+    }
+  }
 
-      return null;
-    };
-
+  return null;
+};
 
 
     const scanNumberPlate = useCallback(async (): Promise<void> => {
