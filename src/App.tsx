@@ -1,6 +1,29 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Camera, SwitchCamera, X, ChevronLeft, ChevronRight, Trash2, Scan, Copy, Check } from 'lucide-react';
 
+// Load Tesseract from CDN
+declare global {
+  interface Window {
+    Tesseract: any;
+  }
+}
+
+// Load Tesseract script
+const loadTesseract = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) {
+      resolve();
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Tesseract'));
+    document.head.appendChild(script);
+  });
+};
+
 interface CameraConstraints {
   video: {
     width: { ideal: number };
@@ -35,6 +58,7 @@ const ModernCameraApp: React.FC = () => {
   const [extractedText, setExtractedText] = useState<string>('');
   const [showScanResult, setShowScanResult] = useState<boolean>(false);
   const [isCopied, setIsCopied] = useState<boolean>(false);
+  const [tesseractLoaded, setTesseractLoaded] = useState<boolean>(false);
   const [permissions, setPermissions] = useState<{
     camera: PermissionState | null;
   }>({ camera: null });
@@ -139,6 +163,8 @@ const ModernCameraApp: React.FC = () => {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
 
+    console.log(preprocessImage)
+
     // Convert to grayscale and increase contrast
     for (let i = 0; i < data.length; i += 4) {
       const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
@@ -197,47 +223,92 @@ const ModernCameraApp: React.FC = () => {
     return null;
   };
 
-  // Simplified OCR using Canvas API (fallback method)
-  const performSimpleOCR = async (imageDataUrl: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        if (!ctx) {
-          resolve('');
-          return;
-        }
+  // Enhanced OCR preprocessing for number plates
+  const preprocessImageForOCR = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): void => {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
 
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
-
-        // Preprocess image for better OCR
-        preprocessImage(canvas, ctx);
-
-        // For demo purposes, we'll simulate OCR with common Indian plate patterns
-        // In a real implementation, you would use a proper OCR library
-        const simulatedPlates = [
-          'HR 26 AB 1234',
-          'DL 01 CA 9999',
-          'MH 12 DE 5678',
-          'UP 14 AT 7890',
-          'KA 05 MN 3456',
-          'TN 09 BZ 8901'
-        ];
-        
-        // Simulate processing delay
-        setTimeout(() => {
-          const randomPlate = simulatedPlates[Math.floor(Math.random() * simulatedPlates.length)];
-          resolve(randomPlate);
-        }, 2000);
-      };
+    // Convert to grayscale and enhance contrast
+    for (let i = 0; i < data.length; i += 4) {
+      // Apply weighted grayscale conversion
+      const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
       
-      img.onerror = () => resolve('');
-      img.src = imageDataUrl;
-    });
+      // Enhance contrast using simple thresholding
+      const enhanced = gray > 120 ? 255 : 0;
+      
+      data[i] = enhanced;     // Red
+      data[i + 1] = enhanced; // Green  
+      data[i + 2] = enhanced; // Blue
+      // Alpha remains unchanged
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+  };
+
+  // Real OCR using Tesseract.js
+  const performTesseractOCR = async (imageDataUrl: string): Promise<string> => {
+    try {
+      if (!window.Tesseract) {
+        throw new Error('Tesseract not loaded');
+      }
+
+      // Create image element
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = imageDataUrl;
+      });
+
+      // Create canvas for preprocessing
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      if (!ctx) {
+        throw new Error('Canvas context not available');
+      }
+
+      // Set canvas size and draw image
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+
+      // Preprocess image for better OCR
+      preprocessImageForOCR(canvas, ctx);
+
+      // Configure Tesseract for number plate recognition
+      const { data: { text, confidence } } = await window.Tesseract.recognize(
+        canvas,
+        'eng',
+        {
+          logger: (m: any) => {
+            if (m.status === 'recognizing text') {
+              console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+            }
+          },
+          config: {
+            // Optimize for number plates
+            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
+            tessedit_pageseg_mode: '8', // Single uniform block of text
+            preserve_interword_spaces: '1',
+            tessedit_do_invert: '0',
+          }
+        }
+      );
+
+      console.log(`OCR Confidence: ${confidence}%`);
+      
+      if (!text || text.trim().length === 0) {
+        throw new Error('No text detected in image');
+      }
+
+      return text.trim();
+    } catch (error) {
+      console.error('Tesseract OCR Error:', error);
+      throw new Error('Failed to extract text from image. Please ensure the number plate is clearly visible.');
+    }
   };
 
   // Enhanced number plate scanning
@@ -250,8 +321,8 @@ const ModernCameraApp: React.FC = () => {
     try {
       const photo = capturedPhotos[selectedPhotoIndex];
       
-      // Use simplified OCR for demo
-      const extractedRawText = await performSimpleOCR(photo.dataUrl);
+      // Use Tesseract OCR
+      const extractedRawText = await performTesseractOCR(photo.dataUrl);
       
       if (!extractedRawText.trim()) {
         setError('No text detected. Please ensure the number plate is clearly visible and try again.');
@@ -327,6 +398,22 @@ const ModernCameraApp: React.FC = () => {
     setSelectedPhotoIndex(index);
     setShowFullscreen(true);
     setShowScanResult(false);
+  }, []);
+
+  // Load Tesseract on component mount
+  useEffect(() => {
+    const initTesseract = async () => {
+      try {
+        await loadTesseract();
+        setTesseractLoaded(true);
+        console.log('Tesseract loaded successfully');
+      } catch (error) {
+        console.error('Failed to load Tesseract:', error);
+        setError('Failed to load OCR engine. Please refresh the page.');
+      }
+    };
+
+    initTesseract();
   }, []);
 
   // Effects
@@ -503,8 +590,8 @@ const ModernCameraApp: React.FC = () => {
               )}
             </button>
 
-            {/* Scan button - Always visible when photos exist */}
-            {capturedPhotos.length > 0 && (
+            {/* Scan button - Always visible when photos exist and Tesseract is loaded */}
+            {capturedPhotos.length > 0 && tesseractLoaded && (
               <button
                 onClick={scanNumberPlate}
                 disabled={isScanning}
@@ -516,6 +603,13 @@ const ModernCameraApp: React.FC = () => {
               >
                 <Scan className={`w-7 h-7 ${isScanning ? 'animate-pulse' : ''}`} />
               </button>
+            )}
+
+            {/* Loading indicator for Tesseract */}
+            {capturedPhotos.length > 0 && !tesseractLoaded && (
+              <div className="p-4 rounded-full bg-yellow-600/90 backdrop-blur-md text-white">
+                <div className="w-7 h-7 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              </div>
             )}
 
             {/* Stop camera button - only show when camera is on and no photos */}
@@ -536,7 +630,16 @@ const ModernCameraApp: React.FC = () => {
           {isScanning && (
             <div className="text-center mt-4">
               <p className="text-white text-sm bg-blue-600/80 backdrop-blur-md px-4 py-2 rounded-full inline-block">
-                Scanning Number Plate...
+                {tesseractLoaded ? 'Scanning Number Plate...' : 'Loading OCR Engine...'}
+              </p>
+            </div>
+          )}
+
+          {/* Tesseract loading indicator */}
+          {!tesseractLoaded && !isScanning && (
+            <div className="text-center mt-4">
+              <p className="text-white text-sm bg-yellow-600/80 backdrop-blur-md px-4 py-2 rounded-full inline-block">
+                Loading OCR Engine...
               </p>
             </div>
           )}
@@ -646,15 +749,19 @@ const ModernCameraApp: React.FC = () => {
               <div className="flex justify-center">
                 <button
                   onClick={scanNumberPlate}
-                  disabled={isScanning}
+                  disabled={isScanning || !tesseractLoaded}
                   className={`flex items-center space-x-2 px-8 py-4 rounded-lg font-semibold text-lg transition-all ${
-                    isScanning 
+                    isScanning || !tesseractLoaded
                       ? 'bg-gray-600 cursor-not-allowed' 
                       : 'bg-blue-600 hover:bg-blue-700 active:scale-95'
                   } text-white shadow-lg`}
                 >
                   <Scan className={`w-6 h-6 ${isScanning ? 'animate-pulse' : ''}`} />
-                  <span>{isScanning ? 'Scanning Number Plate...' : 'Scan Number Plate'}</span>
+                  <span>
+                    {!tesseractLoaded ? 'Loading OCR...' : 
+                     isScanning ? 'Scanning Number Plate...' : 
+                     'Scan Number Plate'}
+                  </span>
                 </button>
               </div>
 
