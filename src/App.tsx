@@ -143,75 +143,81 @@ const ModernCameraApp: React.FC = () => {
     setTimeout(() => setIsCapturing(false), 200);
   }, [isStreaming]);
 
-  // Scan number plate using Tesseract
-  const scanNumberPlate = useCallback(async (): Promise<void> => {
-    if (capturedPhotos.length === 0 || selectedPhotoIndex >= capturedPhotos.length) return;
 
-    setIsScanning(true);
-    setError('');
+    // Utility to validate and format Indian number plates
+    const validateIndianPlate = (rawText: string): string | null => {
+      const strictRegex = /^[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{4}$/;
 
-    try {
-      // Dynamically import Tesseract
-      // const Tesseract = await import('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js');
-      
-      const photo = capturedPhotos[selectedPhotoIndex];
-      
-      // Create image element
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-        img.src = photo.dataUrl;
-      });
-
-      // Configure Tesseract for better number plate recognition
-const options: any = {
-  logger: (m: TesseractLoggerMessage) => console.log(m),
-  config: [
-    'tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    `tessedit_pageseg_mode=${PSM.SINGLE_LINE}`
-  ]
-};
-
-const { data: { text } } = await Tesseract.recognize(img, 'eng', options);
-
-
-
-      // Clean and format the extracted text
-      let cleanedText = text
+      const cleaned = rawText
         .replace(/\s+/g, ' ')
         .replace(/[^A-Z0-9\s]/g, '')
         .trim();
 
-      // Try to format as Indian number plate pattern
-      const indianPlatePattern = /([A-Z]{2})\s*(\d{1,2})\s*([A-Z]{1,2})\s*(\d{4})/;
-      const match = cleanedText.match(indianPlatePattern);
-      
-      if (match) {
-        cleanedText = `${match[1]} ${match[2]} ${match[3]} ${match[4]}`;
+      if (strictRegex.test(cleaned)) {
+        const parts = cleaned.match(/[A-Z]{2}|\d{1,2}|[A-Z]{1,2}|\d{4}/g);
+        return parts ? parts.join(' ') : null;
       }
 
-      setExtractedText(cleanedText);
-      
-      // Update the photo with extracted text
-      setCapturedPhotos(prev => 
-        prev.map((p, index) => 
-          index === selectedPhotoIndex 
-            ? { ...p, extractedText: cleanedText }
-            : p
-        )
-      );
+      return null;
+    };
 
-      setShowScanResult(true);
-    } catch (err) {
-      console.error('OCR Error:', err);
-      setError('Failed to scan number plate. Please try again with a clearer image.');
-    } finally {
-      setIsScanning(false);
-    }
-  }, [capturedPhotos, selectedPhotoIndex]);
+
+
+    const scanNumberPlate = useCallback(async (): Promise<void> => {
+      if (capturedPhotos.length === 0 || selectedPhotoIndex >= capturedPhotos.length) return;
+
+      setIsScanning(true);
+      setError('');
+
+      try {
+        const photo = capturedPhotos[selectedPhotoIndex];
+
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = photo.dataUrl;
+        });
+
+        const options: any = {
+          logger: (m: TesseractLoggerMessage) => console.log(m),
+          config: [
+            'tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+            'tessedit_pageseg_mode=7' // SINGLE_LINE
+          ]
+        };
+
+        const { data: { text } } = await Tesseract.recognize(img, 'eng', options);
+
+        const formattedPlate = validateIndianPlate(text);
+
+        if (!formattedPlate) {
+          setError('Invalid number plate format. Please try again with a clearer image.');
+          setExtractedText('');
+          return;
+        }
+
+        setExtractedText(formattedPlate);
+
+        setCapturedPhotos(prev =>
+          prev.map((p, index) =>
+            index === selectedPhotoIndex
+              ? { ...p, extractedText: formattedPlate }
+              : p
+          )
+        );
+
+        setShowScanResult(true);
+      } catch (err) {
+        console.error('OCR Error:', err);
+        setError('Failed to scan number plate. Please try again with a clearer image.');
+      } finally {
+        setIsScanning(false);
+      }
+    }, [capturedPhotos, selectedPhotoIndex]);
+
 
   // Copy text to clipboard
   const copyToClipboard = useCallback(async (): Promise<void> => {
