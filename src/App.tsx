@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Camera, SwitchCamera, X, ChevronLeft, ChevronRight, Trash2, Scan, Copy, Check } from 'lucide-react';
-import Tesseract, { PSM } from 'tesseract.js';
+import Tesseract from 'tesseract.js';
 
 
 interface CameraConstraints {
